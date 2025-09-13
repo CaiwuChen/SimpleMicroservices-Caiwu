@@ -167,7 +167,7 @@ def update_person(person_id: UUID, update: PersonUpdate):
 # -----------------------------------------------------------------------------
 @app.post("/courses", response_model=CourseRead, status_code=201)
 def create_course(course: CourseCreate):
-    # Each person gets its own UUID; stored as PersonRead
+    # Each course gets its own UUID; stored as CourseRead
     course_read = CourseRead(**course.model_dump())
     courses[course_read.id] = course_read
     return course_read
@@ -219,33 +219,28 @@ def update_course(course_id: UUID, update: CourseUpdate):
 # -----------------------------------------------------------------------------
 @app.post("/registrations", response_model=RegistrationRead, status_code=201)
 def create_registration(reg: RegistrationCreate):
-    # 1️⃣ Check that person exists
+
     if reg.person_id not in persons:
         raise HTTPException(status_code=404, detail="Person not found")
-    
-    # 2️⃣ Check that course exists
+  
     if reg.course_id not in courses:
         raise HTTPException(status_code=404, detail="Course not found")
     
     course = courses[reg.course_id]
     
-    # 3️⃣ Check enrollment vs capacity
     if course.enrollment < course.capacity:
         status = "enrolled"
-        course.enrollment += 1  # increment current enrollment
+        course.enrollment += 1  
     else:
         status = "waitlisted"
     
-    # 4️⃣ Create RegistrationRead
     registration_read = RegistrationRead(
         **reg.model_dump(),
         status=status
     )
     
-    # 5️⃣ Store it
     registrations[registration_read.id] = registration_read
     
-    # 6️⃣ Update course record
     courses[course.id] = course
     
     return registration_read
@@ -280,10 +275,8 @@ def update_registration(registration_id: UUID, update: RegistrationUpdate):
     
     stored = registrations[registration_id].model_dump()
     
-    # 1️⃣ Update status
     stored.update(update.model_dump(exclude_unset=True))
-    
-    # 2️⃣ If status changed from enrolled -> dropped, decrement course enrollment
+
     registration = RegistrationRead(**stored)
     course = courses[registration.course_id]
     
@@ -293,7 +286,6 @@ def update_registration(registration_id: UUID, update: RegistrationUpdate):
     if old_status == "enrolled" and new_status == "dropped":
         course.enrollment -= 1
         
-        # Optionally promote first waitlisted student
         waitlisted = next(
             (r for r in registrations.values() 
              if r.course_id == course.id and r.status == "waitlisted"),
