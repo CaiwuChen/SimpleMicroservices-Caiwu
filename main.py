@@ -14,6 +14,8 @@ from typing import Optional
 from models.person import PersonCreate, PersonRead, PersonUpdate
 from models.address import AddressCreate, AddressRead, AddressUpdate
 from models.health import Health
+from models.course import CourseCreate, CourseRead, CourseUpdate
+from models.registration import RegistrationCreate, RegistrationRead, RegistrationUpdate
 
 port = int(os.environ.get("FASTAPIPORT", 8000))
 
@@ -22,7 +24,8 @@ port = int(os.environ.get("FASTAPIPORT", 8000))
 # -----------------------------------------------------------------------------
 persons: Dict[UUID, PersonRead] = {}
 addresses: Dict[UUID, AddressRead] = {}
-
+courses: Dict[UUID,CourseRead] = {}
+registrations: Dict[UUID,RegistrationRead] = {}
 app = FastAPI(
     title="Person/Address API",
     description="Demo FastAPI app using Pydantic v2 models for Person and Address",
@@ -159,6 +162,151 @@ def update_person(person_id: UUID, update: PersonUpdate):
     persons[person_id] = PersonRead(**stored)
     return persons[person_id]
 
+# -----------------------------------------------------------------------------
+# Course endpoints
+# -----------------------------------------------------------------------------
+@app.post("/courses", response_model=CourseRead, status_code=201)
+def create_course(course: CourseCreate):
+    # Each person gets its own UUID; stored as PersonRead
+    course_read = CourseRead(**course.model_dump())
+    courses[course_read.id] = course_read
+    return course_read
+
+@app.get("/courses", response_model=List[CourseRead])
+def list_courses(
+    coursenumber: Optional[str] = Query(None, description="Filter by Columbia UNI"),
+    instructor: Optional[str] = Query(None, description="Filter by first name"),
+    time: Optional[str] = Query(None, description="Filter by last name"),
+    location: Optional[str] = Query(None, description="Filter by email"),
+    capacity: Optional[int] = Query(None, description="Filter by phone number"),
+    enrollment: Optional[int] = Query(None, description="Filter by date of birth (YYYY-MM-DD)"),
+):
+    results = list(courses.values())
+
+    if coursenumber is not None:
+        results = [p for p in results if p.coursenumber == coursenumber]
+    if instructor is not None:
+        results = [p for p in results if p.instructor == instructor]
+    if time is not None:
+        results = [p for p in results if p.time == time]
+    if location is not None:
+        results = [p for p in results if p.location == location]
+    if capacity is not None:
+        results = [p for p in results if p.capacity == capacity]
+    if enrollment is not None:
+        results = [p for p in results if str(p.enrollment) == enrollment]
+
+    return results
+
+@app.get("/courses/{course_id}", response_model=CourseRead)
+def get_course(course_id: UUID):
+    if course_id not in courses:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return courses[course_id]
+
+@app.patch("/courses/{course_id}", response_model=CourseRead)
+def update_course(course_id: UUID, update: CourseUpdate):
+    if course_id not in courses:
+        raise HTTPException(status_code=404, detail="Course not found")
+    stored = courses[course_id].model_dump()
+    stored.update(update.model_dump(exclude_unset=True))
+    stored["updated_at"] = datetime.utcnow()
+    courses[course_id] = CourseRead(**stored)
+    return courses[course_id]
+
+# -----------------------------------------------------------------------------
+# Registration Endpoint 
+# -----------------------------------------------------------------------------
+@app.post("/registrations", response_model=RegistrationRead, status_code=201)
+def create_registration(reg: RegistrationCreate):
+    # 1️⃣ Check that person exists
+    if reg.person_id not in persons:
+        raise HTTPException(status_code=404, detail="Person not found")
+    
+    # 2️⃣ Check that course exists
+    if reg.course_id not in courses:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    course = courses[reg.course_id]
+    
+    # 3️⃣ Check enrollment vs capacity
+    if course.enrollment < course.capacity:
+        status = "enrolled"
+        course.enrollment += 1  # increment current enrollment
+    else:
+        status = "waitlisted"
+    
+    # 4️⃣ Create RegistrationRead
+    registration_read = RegistrationRead(
+        **reg.model_dump(),
+        status=status
+    )
+    
+    # 5️⃣ Store it
+    registrations[registration_read.id] = registration_read
+    
+    # 6️⃣ Update course record
+    courses[course.id] = course
+    
+    return registration_read
+
+
+@app.get("/registrations", response_model=List[RegistrationRead])
+def list_registrations(
+    person_id: Optional[UUID] = Query(None),
+    course_id: Optional[UUID] = Query(None),
+    status: Optional[str] = Query(None)
+):
+    results = list(registrations.values())
+    
+    if person_id is not None:
+        results = [r for r in results if r.person_id == person_id]
+    if course_id is not None:
+        results = [r for r in results if r.course_id == course_id]
+    if status is not None:
+        results = [r for r in results if r.status == status]
+    
+    return results
+
+def get_registration(registration_id: UUID):
+    if registration_id not in registrations:
+        raise HTTPException(status_code=404, detail="Registration not found")
+    return registrations[registration_id]
+
+
+def update_registration(registration_id: UUID, update: RegistrationUpdate):
+    if registration_id not in registrations:
+        raise HTTPException(status_code=404, detail="Registration not found")
+    
+    stored = registrations[registration_id].model_dump()
+    
+    # 1️⃣ Update status
+    stored.update(update.model_dump(exclude_unset=True))
+    
+    # 2️⃣ If status changed from enrolled -> dropped, decrement course enrollment
+    registration = RegistrationRead(**stored)
+    course = courses[registration.course_id]
+    
+    old_status = registrations[registration_id].status
+    new_status = registration.status
+    
+    if old_status == "enrolled" and new_status == "dropped":
+        course.enrollment -= 1
+        
+        # Optionally promote first waitlisted student
+        waitlisted = next(
+            (r for r in registrations.values() 
+             if r.course_id == course.id and r.status == "waitlisted"),
+            None
+        )
+        if waitlisted:
+            waitlisted.status = "enrolled"
+            course.enrollment += 1
+            registrations[waitlisted.id] = waitlisted
+
+    registrations[registration_id] = registration
+    courses[course.id] = course
+    return registration
 # -----------------------------------------------------------------------------
 # Root
 # -----------------------------------------------------------------------------
